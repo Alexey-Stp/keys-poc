@@ -1,11 +1,15 @@
 <#
 .SYNOPSIS
-    Checks every tenant's Keys\ folder against the expected SHA256 values in hashes.json.
+    Checks every tenant's final Keys\ folder and app folder against hashes.json.
 .DESCRIPTION
-    For each tenant in hashes.json "expected" (or only -Tenant), finds <ConfigDir>\<tenant>\Keys
-    in one of the -ConfigDir folders and compares the exact file set and each file's SHA256.
-    Text files must not start with a UTF-8 BOM (EF BB BF). Prints a table (and appends it as
-    Markdown to -SummaryPath when given); exits 1 on any problem.
+    -ConfigDir is a server's config folder (CONFIG_DIR); the tenant's app folder is the sibling
+    <server>\<tenant>\app. For each tenant in hashes.json "expected" (or only -Tenant):
+      - Keys\ holds exactly the expected files, each with the expected SHA256
+      - text files don't start with a UTF-8 BOM (EF BB BF)
+      - Keys\ has no subfolders left (shared\, tenant\)
+      - no key file anywhere under <tenant>\app\
+      - <tenant>\app\app-pools-started.txt exists and is not older than the newest key file
+    Prints a table (and appends it as Markdown to -SummaryPath when given); exits 1 on any problem.
 #>
 [CmdletBinding()]
 param(
@@ -18,6 +22,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $binaryExtensions = @('.p12', '.pfx')
+$keyExtensions = @('.openssh', '.pgp', '.gpg', '.asc', '.p8', '.p12', '.pfx', '.pem', '.ppk', '.key')
 $expectedAll = (Get-Content -Raw -LiteralPath $Expected | ConvertFrom-Json).expected
 $tenants = if ($Tenant) { $Tenant } else { @($expectedAll.PSObject.Properties.Name) }
 
@@ -30,10 +35,12 @@ foreach ($t in $tenants) {
     $exp = $expectedAll.$t
     if ($null -eq $exp) { Add-Row $t '-' 'FAIL' 'tenant not in hashes.json'; continue }
 
-    $found = @($ConfigDir | ForEach-Object { Join-Path (Join-Path $_ $t) 'Keys' } | Where-Object { Test-Path -LiteralPath $_ })
+    $found = @($ConfigDir | Where-Object { Test-Path -LiteralPath (Join-Path (Join-Path $_ $t) 'Keys') })
     if ($found.Count -ne 1) { Add-Row $t '-' 'FAIL' "Keys folder found $($found.Count) times (expected 1)"; continue }
-    $keysDir = $found[0]
+    $keysDir = Join-Path (Join-Path $found[0] $t) 'Keys'
+    $appDir = Join-Path (Join-Path (Split-Path -Parent $found[0]) $t) 'app'
 
+    # --- key files
     $expNames = @($exp.PSObject.Properties.Name)
     $actual = @(Get-ChildItem -LiteralPath $keysDir -File -Force)
     foreach ($f in $actual | Sort-Object Name) {
@@ -56,20 +63,44 @@ foreach ($t in $tenants) {
     foreach ($n in $expNames | Sort-Object) {
         if (@($actual | Where-Object Name -eq $n).Count -eq 0) { Add-Row $t $n 'FAIL' 'missing' }
     }
+
+    # --- layout
+    $subDirs = @(Get-ChildItem -LiteralPath $keysDir -Directory -Force | ForEach-Object Name)
+    if ($subDirs.Count -gt 0) { Add-Row $t '(Keys subfolders)' 'FAIL' "left after merge: $($subDirs -join ', ')" }
+    else { Add-Row $t '(Keys subfolders)' 'OK' 'none' }
+
+    if (-not (Test-Path -LiteralPath $appDir)) { Add-Row $t '(app folder)' 'FAIL' "missing: $appDir"; continue }
+    $keysInApp = @(Get-ChildItem -LiteralPath $appDir -File -Recurse -Force | Where-Object {
+            $expNames -contains $_.Name -or $keyExtensions -contains $_.Extension.ToLowerInvariant() })
+    if ($keysInApp.Count -gt 0) { Add-Row $t '(app folder)' 'FAIL' ("key files in app: " + (($keysInApp | ForEach-Object Name) -join ', ')) }
+    else { Add-Row $t '(app folder)' 'OK' 'no key files' }
+
+    $pools = Join-Path $appDir 'app-pools-started.txt'
+    if (-not (Test-Path -LiteralPath $pools)) { Add-Row $t '(app pool start)' 'FAIL' 'app-pools-started.txt missing' }
+    elseif ($actual.Count -gt 0) {
+        $newestKey = ($actual | Sort-Object LastWriteTimeUtc -Descending)[0].LastWriteTimeUtc
+        $started = (Get-Item -LiteralPath $pools).LastWriteTimeUtc
+        $detail = "pool $($started.ToString('HH:mm:ss.fff')), newest key $($newestKey.ToString('HH:mm:ss.fff'))"
+        if ($started -lt $newestKey) { Add-Row $t '(app pool start)' 'FAIL' "pool started before keys were in place: $detail" }
+        else { Add-Row $t '(app pool start)' 'OK' $detail }
+    }
 }
 
-$rows | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+$rows | Format-Table -AutoSize | Out-String -Width 220 | Write-Host
 $failed = @($rows | Where-Object Status -ne 'OK').Count
+$keyRows = @($rows | Where-Object { $_.File -notlike '(*' })
+$keyOk = @($keyRows | Where-Object Status -eq 'OK').Count
+$headline = "$keyOk/$($keyRows.Count) key files byte-exact; $failed problem(s)"
 
 if ($SummaryPath) {
     $md = New-Object Text.StringBuilder
-    [void]$md.AppendLine("### Key verification: $(if ($failed) { "$failed problem(s)" } else { 'all OK' })")
+    [void]$md.AppendLine("### Key verification: $headline")
     [void]$md.AppendLine('')
-    [void]$md.AppendLine('| Tenant | File | Status | Detail |')
+    [void]$md.AppendLine('| Tenant | File / check | Status | Detail |')
     [void]$md.AppendLine('|---|---|---|---|')
     foreach ($r in $rows) { [void]$md.AppendLine("| $($r.Tenant) | $($r.File) | $($r.Status) | $($r.Detail) |") }
     [IO.File]::AppendAllText($SummaryPath, $md.ToString())
 }
 
-if ($failed) { Write-Host "::error::$failed key file problem(s)"; exit 1 }
-Write-Host "All $($rows.Count) key files match"
+Write-Host $headline
+if ($failed) { Write-Host "::error::$failed problem(s)"; exit 1 }

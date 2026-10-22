@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    Writes the shared keys from KEY_* environment variables to <ConfigDir>\<Tenant>\Keys\.
+    Writes the shared keys from KEY_* environment variables to <ConfigDir>\<Tenant>\Keys\shared\.
 .DESCRIPTION
-    Text keys are written byte-for-byte as UTF-8 without a BOM and nothing appended.
-    KEY_LEGACY_P12 holds base64 of a binary file and is decoded. Prints names, never values.
-    -Broken writes text with Set-Content instead (BOM + CRLF) - used by negative.yml only.
+    Every KEY_* value is base64 of the exact file bytes; one path for all keys:
+    FromBase64String -> WriteAllBytes. Prints names, never values.
+    -Broken writes the decoded bytes as a string with Set-Content (BOM + CRLF) - negative.yml only.
 #>
 [CmdletBinding()]
 param(
@@ -23,27 +23,23 @@ $sharedKeys = [ordered]@{
     KEY_APNS_P8      = 'AuthKey_APNS.p8'
     KEY_LEGACY_P12   = 'Legacy.p12'
 }
-$base64Keys = @('KEY_LEGACY_P12')
 
-$keysDir = Join-Path (Join-Path $ConfigDir $Tenant) 'Keys'
-New-Item -ItemType Directory -Path $keysDir -Force | Out-Null
-$utf8NoBom = New-Object Text.UTF8Encoding($false)
+$sharedDir = Join-Path (Join-Path (Join-Path $ConfigDir $Tenant) 'Keys') 'shared'
+if (Test-Path -LiteralPath $sharedDir) { Remove-Item -LiteralPath $sharedDir -Recurse -Force }
+New-Item -ItemType Directory -Path $sharedDir -Force | Out-Null
 
 foreach ($var in $sharedKeys.Keys) {
     $value = [Environment]::GetEnvironmentVariable($var)
     if ([string]::IsNullOrEmpty($value)) { throw "$var is empty - is the repository secret set and mapped in the step env?" }
-    $path = Join-Path $keysDir $sharedKeys[$var]
+    try { $bytes = [Convert]::FromBase64String($value) }
+    catch [FormatException] { throw "$var is not valid base64" }
 
-    if ($base64Keys -contains $var) {
-        try { $bytes = [Convert]::FromBase64String($value) }
-        catch [FormatException] { throw "$var is not valid base64" }
-        [IO.File]::WriteAllBytes($path, $bytes)
-    }
-    elseif ($Broken) {
-        Set-Content -LiteralPath $path -Value $value -Encoding UTF8   # deliberately wrong: BOM + CRLF
+    $path = Join-Path $sharedDir $sharedKeys[$var]
+    if ($Broken) {
+        Set-Content -LiteralPath $path -Value ([Text.Encoding]::UTF8.GetString($bytes)) -Encoding UTF8   # deliberately wrong
     }
     else {
-        [IO.File]::WriteAllText($path, $value, $utf8NoBom)
+        [IO.File]::WriteAllBytes($path, $bytes)
     }
-    Write-Host ("{0,-10} {1,-28} <- {2}" -f $Tenant, $sharedKeys[$var], $var)
+    Write-Host ("{0,-10} {1,-28} <- {2}" -f $Tenant, "shared\$($sharedKeys[$var])", $var)
 }

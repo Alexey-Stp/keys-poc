@@ -20,12 +20,14 @@ set_secret() {   # name file [env]
 }
 
 k=_testkeys
-set_secret KEY_SFTP_PRIVATE "$k/sftp_rsa"
-set_secret KEY_PGP_PRIVATE  "$k/pgp_private.asc"
-set_secret KEY_PGP_PUBLIC   "$k/pgp_public.asc"
-set_secret KEY_APNS_P8      "$k/apns.p8"
-base64 -w0 "$k/legacy.p12" > "$tmp/legacy.p12.b64"
-set_secret KEY_LEGACY_P12   "$tmp/legacy.p12.b64"
+# Every shared key is stored as base64 of the exact file bytes: raw text secrets
+# lose their trailing newline (REPORT.md). The size check applies to the base64 value.
+b64() { base64 -w0 "$k/$2" > "$tmp/$1.b64"; set_secret "$1" "$tmp/$1.b64"; }
+b64 KEY_SFTP_PRIVATE sftp_rsa
+b64 KEY_PGP_PRIVATE  pgp_private.asc
+b64 KEY_PGP_PUBLIC   pgp_public.asc
+b64 KEY_APNS_P8      apns.p8
+b64 KEY_LEGACY_P12   legacy.p12
 
 for t in carecorp initech; do
   "$gh" api -X PUT "repos/$repo/environments/$t" --silent

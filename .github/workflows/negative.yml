@@ -43,7 +43,8 @@ jobs:
           New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\config\globex\Keys" -Force | Out-Null
           .\scripts\write-tenant-keys.ps1 -ConfigDir "$env:RUNNER_TEMP\config" -Tenant globex
 
-  # Set-Content adds a BOM and CRLF; verify-keys.ps1 must catch it.
+  # Set-Content of the decoded bytes adds a BOM and CRLF; verify-keys.ps1 must catch it.
+  # The rest of the layout (merge, app folder, pool start) is correct, so only the key files fail.
   broken-writer:
     runs-on: windows-latest
     defaults:
@@ -61,8 +62,13 @@ jobs:
           KEY_APNS_P8:      ${{ secrets.KEY_APNS_P8 }}
           KEY_LEGACY_P12:   ${{ secrets.KEY_LEGACY_P12 }}
         run: |
-          .\scripts\write-shared-keys.ps1 -ConfigDir "$env:RUNNER_TEMP\config" -Tenant acme -Broken
-          .\scripts\verify-keys.ps1 -ConfigDir "$env:RUNNER_TEMP\config" -Expected hashes.json -Tenant acme -SummaryPath $env:GITHUB_STEP_SUMMARY
+          $ErrorActionPreference = 'Stop'
+          $server = "$env:RUNNER_TEMP\servers\SB21"
+          .\scripts\write-shared-keys.ps1 -ConfigDir "$server\config" -Tenant acme -Broken
+          .\scripts\merge-keys.ps1 -ConfigDir "$server\config" -Tenant acme
+          New-Item -ItemType Directory -Path "$server\acme\app" -Force | Out-Null
+          [IO.File]::WriteAllText("$server\acme\app\app-pools-started.txt", [DateTime]::UtcNow.ToString('o'))
+          .\scripts\verify-keys.ps1 -ConfigDir "$server\config" -Expected hashes.json -Tenant acme -SummaryPath $env:GITHUB_STEP_SUMMARY
 
   summary:
     needs: [no-environment, globex-no-tenant-keys, broken-writer]

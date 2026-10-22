@@ -1,0 +1,51 @@
+name: deploy-one
+# Single-tenant deploy: one job with the tenant's environment does what deploy-tenant-keys and
+# deploy-all do together, using the same scripts.
+on:
+  workflow_dispatch:
+    inputs:
+      tenant:
+        description: Tenant (environment name)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-one:
+    runs-on: windows-latest
+    environment: ${{ inputs.tenant }}
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: deploy ${{ inputs.tenant }}
+        env:
+          TENANT: ${{ inputs.tenant }}
+          TENANT_KEYS: ${{ secrets.TENANT_KEYS }}
+          KEY_SFTP_PRIVATE: ${{ secrets.KEY_SFTP_PRIVATE }}
+          KEY_PGP_PRIVATE:  ${{ secrets.KEY_PGP_PRIVATE }}
+          KEY_PGP_PUBLIC:   ${{ secrets.KEY_PGP_PUBLIC }}
+          KEY_APNS_P8:      ${{ secrets.KEY_APNS_P8 }}
+          KEY_LEGACY_P12:   ${{ secrets.KEY_LEGACY_P12 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $server = .\scripts\get-tenant-server.ps1 -Tenant $env:TENANT
+          $serverDir = Join-Path $env:RUNNER_TEMP "servers\$server"
+          $build = .\scripts\new-build.ps1 -ServerDir $serverDir
+          # -Optional: a tenant without TENANT_KEYS gets shared keys only
+          .\scripts\write-tenant-keys.ps1 -ConfigDir "$serverDir\config" -Tenant $env:TENANT -Optional
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\scripts\deploy-tenant.ps1 -ServerDir $serverDir -Tenant $env:TENANT -BuildDir $build
+
+      - name: verify ${{ inputs.tenant }}
+        env:
+          TENANT: ${{ inputs.tenant }}
+        run: |
+          $server = .\scripts\get-tenant-server.ps1 -Tenant $env:TENANT
+          .\scripts\verify-keys.ps1 -ConfigDir "$env:RUNNER_TEMP\servers\$server\config" -Expected hashes.json -Tenant $env:TENANT -SummaryPath $env:GITHUB_STEP_SUMMARY
