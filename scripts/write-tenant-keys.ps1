@@ -3,25 +3,37 @@
     Extracts the tenant's own keys from $env:TENANT_KEYS (base64 zip) into <ConfigDir>\<Tenant>\Keys\tenant\.
 .DESCRIPTION
     merge-keys.ps1 later copies them over the shared keys (same name replaces).
-    Exits 1 when TENANT_KEYS is empty, unless -Optional (single-tenant deploy of a tenant
-    without its own keys), which then writes nothing and exits 0.
+    Exits 1 when TENANT_KEYS is empty.
+    -TenantsWithCustomKeys (the TENANTS_WITH_CUSTOM_KEYS JSON array, used by deploy-to-tenant):
+    a tenant not in the list has no tenant keys - writes nothing and exits 0; a listed tenant
+    must have TENANT_KEYS. Passing an empty list is an error, so an unset variable can't turn
+    into "skip".
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string] $ConfigDir,
     [Parameter(Mandatory = $true)][string] $Tenant,
-    [switch] $Optional
+    [string] $TenantsWithCustomKeys
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-if ([string]::IsNullOrWhiteSpace($env:TENANT_KEYS)) {
-    if ($Optional) {
-        Write-Host "TENANT_KEYS is empty for tenant '$Tenant' - no tenant keys, shared keys only"
+if ($PSBoundParameters.ContainsKey('TenantsWithCustomKeys')) {
+    if ([string]::IsNullOrWhiteSpace($TenantsWithCustomKeys)) {
+        Write-Host "::error::TENANTS_WITH_CUSTOM_KEYS is empty - set the repository variable (a JSON array, may be [])"
+        exit 1
+    }
+    try { $listed = @($TenantsWithCustomKeys | ConvertFrom-Json | ForEach-Object { $_ }) }
+    catch { Write-Host "::error::TENANTS_WITH_CUSTOM_KEYS is not a JSON array: $TenantsWithCustomKeys"; exit 1 }
+    if ($listed -notcontains $Tenant) {
+        Write-Host "Tenant '$Tenant' is not in TENANTS_WITH_CUSTOM_KEYS - shared keys only"
         exit 0
     }
+}
+
+if ([string]::IsNullOrWhiteSpace($env:TENANT_KEYS)) {
     Write-Host "::error::TENANT_KEYS is empty for tenant '$Tenant' - the job needs 'environment: $Tenant' and that environment needs a TENANT_KEYS secret"
     exit 1
 }

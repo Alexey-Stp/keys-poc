@@ -33,13 +33,14 @@ jobs:
           KEY_PGP_PUBLIC:   ${{ secrets.KEY_PGP_PUBLIC }}
           KEY_APNS_P8:      ${{ secrets.KEY_APNS_P8 }}
           KEY_LEGACY_P12:   ${{ secrets.KEY_LEGACY_P12 }}
+          TENANTS_WITH_CUSTOM_KEYS: ${{ vars.TENANTS_WITH_CUSTOM_KEYS }}
         run: |
           $ErrorActionPreference = 'Stop'
           $server = .\scripts\get-tenant-server.ps1 -Tenant $env:TENANT
           $serverDir = Join-Path $env:RUNNER_TEMP "servers\$server"
           $build = .\scripts\new-build.ps1 -ServerDir $serverDir
-          # -Optional: a tenant without TENANT_KEYS gets shared keys only
-          .\scripts\write-tenant-keys.ps1 -ConfigDir "$serverDir\config" -Tenant $env:TENANT -Optional
+          # Listed in TENANTS_WITH_CUSTOM_KEYS: TENANT_KEYS is mandatory. Not listed: shared keys only.
+          .\scripts\write-tenant-keys.ps1 -ConfigDir "$serverDir\config" -Tenant $env:TENANT -TenantsWithCustomKeys $env:TENANTS_WITH_CUSTOM_KEYS
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           .\scripts\deploy-tenant.ps1 -ServerDir $serverDir -Tenant $env:TENANT -BuildDir $build
 

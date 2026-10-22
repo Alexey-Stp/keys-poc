@@ -70,8 +70,28 @@ jobs:
           [IO.File]::WriteAllText("$server\acme\app\app-pools-started.txt", [DateTime]::UtcNow.ToString('o'))
           .\scripts\verify-keys.ps1 -ConfigDir "$server\config" -Expected hashes.json -Tenant acme -SummaryPath $env:GITHUB_STEP_SUMMARY
 
+  # deploy-to-tenant rule: a tenant listed in TENANTS_WITH_CUSTOM_KEYS must have TENANT_KEYS.
+  # Simulates "acme added to the list, secret not set yet": the acme environment has no
+  # TENANT_KEYS, and the list passed here includes acme (the repository variable does not).
+  listed-tenant-without-secret:
+    runs-on: windows-latest
+    environment: acme
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: write tenant keys for acme, listed as a custom-keys tenant
+        env:
+          TENANT_KEYS: ${{ secrets.TENANT_KEYS }}
+          TENANTS_WITH_CUSTOM_KEYS: '["carecorp","initech","acme"]'
+        run: |
+          .\scripts\write-tenant-keys.ps1 -ConfigDir "$env:RUNNER_TEMP\servers\SB21\config" -Tenant acme -TenantsWithCustomKeys $env:TENANTS_WITH_CUSTOM_KEYS
+
   summary:
-    needs: [no-environment, globex-no-tenant-keys, broken-writer]
+    needs: [no-environment, globex-no-tenant-keys, broken-writer, listed-tenant-without-secret]
     if: always()
     runs-on: windows-latest
     defaults:
@@ -83,11 +103,13 @@ jobs:
           R1: ${{ needs.no-environment.result }}
           R2: ${{ needs.globex-no-tenant-keys.result }}
           R3: ${{ needs.broken-writer.result }}
+          R4: ${{ needs.listed-tenant-without-secret.result }}
         run: |
           $checks = [ordered]@{
             'no-environment (TENANT_KEYS is empty)' = $env:R1
             'globex-no-tenant-keys (write-tenant-keys fails)' = $env:R2
             'broken-writer (verify catches BOM/CRLF)' = $env:R3
+            'listed-tenant-without-secret (listed tenant must have TENANT_KEYS)' = $env:R4
           }
           $md = "### Negative checks`n`n| Check | Job result | Verdict |`n|---|---|---|`n"
           $bad = 0
