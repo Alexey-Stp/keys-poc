@@ -2,10 +2,10 @@
 .SYNOPSIS
     Deploys one tenant on one "server": mirror app, shared + tenant keys, merge, robocopy check, start pool.
 .DESCRIPTION
-    Shared by deploy.yml (deploy-all, per tenant) and deploy-one.yml. Layout under -ServerDir:
+    Shared by deploy-to-all.yml (deploy-all, per tenant) and deploy-to-tenant.yml. Layout under -ServerDir:
         config\<tenant>\Keys\   final keys (CONFIG_DIR in production, outside the app folder)
         <tenant>\app\           mirrored build, never holds keys
-    Tenant keys are either already in config\<tenant>\Keys\tenant\ (deploy-one: write-tenant-keys.ps1)
+    Tenant keys are either already in config\<tenant>\Keys\tenant\ (deploy-to-tenant: write-tenant-keys.ps1)
     or copied there from -TenantKeysFrom (deploy-all: the deploy-tenant-keys artifact).
     Reads the KEY_* variables via write-shared-keys.ps1.
 #>

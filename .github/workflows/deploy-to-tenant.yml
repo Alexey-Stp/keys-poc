@@ -1,4 +1,4 @@
-name: deploy-one
+name: deploy-to-tenant
 # Single-tenant deploy: one job with the tenant's environment does what deploy-tenant-keys and
 # deploy-all do together, using the same scripts.
 on:
@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 jobs:
-  deploy-one:
+  deploy-to-tenant:
     runs-on: windows-latest
     environment: ${{ inputs.tenant }}
     defaults:

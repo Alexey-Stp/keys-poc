@@ -11,18 +11,28 @@ Repo `Alexey-Stp/keys-poc`, 2026-10-22. Final commit `fa58c94`. All keys are thr
 - Single-tenant deploys work for a tenant with its own keys and for one without.
 - All three negative checks fail for the right reason.
 
+## Why deploy-to-all needs separate tenant-key jobs
+
+- **Environment secrets reach only jobs that name that environment.** GitHub docs, [Deployments and environments: Environment secrets](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments#environment-secrets): "Secrets stored in an environment are only available to workflow jobs that reference the environment."
+- **A job names one environment.** [`jobs.<job_id>.environment`](https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#jobsjob_idenvironment): "Use `jobs.<job_id>.environment` to define the environment that the job references." The value is a single name, or an object with one `name`.
+- **Confirmed here.** The `no-environment` negative check read `TENANT_KEYS` with length 0.
+
+So the two workflows work differently:
+- **`deploy-to-tenant`** is one job with `environment: <tenant>`. It sees the repository secrets (shared keys) and that tenant's `TENANT_KEYS`.
+- **`deploy-to-all`** runs one job for all tenants. It has no environment, so it sees only repository secrets. It therefore needs one extra job per tenant with its own keys (`deploy-tenant-keys`, a matrix over `TENANTS_WITH_CUSTOM_KEYS`, each with `environment: <tenant>`), run before it.
+
 ## Final results (commit `fa58c94`)
 
 | # | Check | Expected | Result | Run |
 |---|---|---|---|---|
 | 1 | Size check before every `gh secret set` (now on the base64 value) | all under 32,000 bytes | pass (largest 10,488) | local, `scripts/set-secrets.sh` |
-| 2 | `deploy.yml` `deploy-tenant-keys` (carecorp, initech), runs first | tenant keys decoded into `config\<tenant>\Keys\tenant\` | pass | [39801633846](https://github.com/Alexey-Stp/keys-poc/actions/runs/39801633846) |
-| 3 | `deploy.yml` `deploy-all`: per tenant mirror, shared keys, merge, robocopy check, start pool | all 4 tenants deployed | pass. Tenant SFTP keys logged `tenant (replaces shared)` | same run |
+| 2 | `deploy-to-all.yml` `deploy-tenant-keys` (carecorp, initech), runs first | tenant keys decoded into `config\<tenant>\Keys\tenant\` | pass | [39801633846](https://github.com/Alexey-Stp/keys-poc/actions/runs/39801633846) |
+| 3 | `deploy-to-all.yml` `deploy-all`: per tenant mirror, shared keys, merge, robocopy check, start pool | all 4 tenants deployed | pass. Tenant SFTP keys logged `tenant (replaces shared)` | same run |
 | 4 | robocopy: second `/MIR` of the app folder after the merge | key hashes unchanged | pass for acme (5 files), carecorp (7), globex (5), initech (6) | same run |
 | 5 | `verify-keys.ps1` on the live folders inside `deploy-all` | 23/23, layout OK, pool after keys | **23/23 byte-exact, 0 problems.** Pool is 50-390 ms after the newest key for every tenant | same run |
 | 6 | `verify` job (after the artifact round trip) | same | **23/23 byte-exact, 0 problems** (pool order only checkable to 2 s here, see note 1) | same run |
-| 7 | `deploy-one` carecorp | shared + tenant keys, verified | pass: 7/7 byte-exact, SFTP key replaced by tenant's | [39801775450](https://github.com/Alexey-Stp/keys-poc/actions/runs/39801775450) |
-| 8 | `deploy-one` acme (no `TENANT_KEYS`) | shared only, no failure | pass: "no tenant keys, shared keys only", 5/5 byte-exact | [39801793462](https://github.com/Alexey-Stp/keys-poc/actions/runs/39801793462) |
+| 7 | `deploy-to-tenant` carecorp | shared + tenant keys, verified | pass: 7/7 byte-exact, SFTP key replaced by tenant's | [39801775450](https://github.com/Alexey-Stp/keys-poc/actions/runs/39801775450) |
+| 8 | `deploy-to-tenant` acme (no `TENANT_KEYS`) | shared only, no failure | pass: "no tenant keys, shared keys only", 5/5 byte-exact | [39801793462](https://github.com/Alexey-Stp/keys-poc/actions/runs/39801793462) |
 | 9 | negative: job without `environment:` reads `TENANT_KEYS` | empty, script fails | failed as expected (length 0) | [39801810800](https://github.com/Alexey-Stp/keys-poc/actions/runs/39801810800) |
 | 10 | negative: `environment: globex` | `write-tenant-keys.ps1` fails | failed as expected (`TENANT_KEYS is empty for tenant 'globex'`) | same run |
 | 11 | negative: `write-shared-keys.ps1 -Broken` (`Set-Content` of the decoded bytes) | `verify-keys.ps1` catches it | failed as expected: BOM + CRLF + hash mismatch on all 4 text keys, hash mismatch on `Legacy.p12` | same run |
@@ -45,7 +55,7 @@ The broken writer also confirms decision 1. Its text files are now exactly 5 byt
    - The app folder holds no keys.
    - The pool starts only after the merge.
    - The per-tenant sequence is in `scripts/deploy-tenant.ps1`. The merge is in `scripts/merge-keys.ps1`, which sets each merged file's time to the merge time, so the pool-order check means something; a plain copy would keep the old file times.
-4. **`deploy-one.yml`** (decision 4).
+4. **`deploy-to-tenant.yml`** (decision 4).
    - One job with `environment: <tenant>`.
    - It calls the same scripts. `write-tenant-keys.ps1 -Optional` skips a tenant without `TENANT_KEYS` instead of failing.
 5. **`verify-keys.ps1`** additionally fails on any of these:
@@ -82,14 +92,14 @@ Base64 adds about 33%. The largest single value is 10,488 bytes, well under 32,0
    - The same script runs on the live folders inside `deploy-all` before upload, with exact times, and that check shows the real order.
    - On real servers there's no artifact round trip.
 2. **Environments are created implicitly.**
-   - `environment: <name>` creates an empty environment if none exists. The negative test created `globex` again (deleted), and `deploy-one acme` created `acme` (kept: a real tenant has its own environment).
-   - A typo in a tenant name creates an environment the same way. In `deploy.yml` the empty-`TENANT_KEYS` check catches it.
-   - In `deploy-one` it does not, because `-Optional` skips missing tenant keys. A tenant that should have its own keys but whose secret is missing would deploy with shared keys only.
-   - Suggested: in `deploy-one`, use `-Optional` only when the tenant is not in `TENANTS_WITH_CUSTOM_KEYS`. Not implemented, to keep decision 4 as specified.
+   - `environment: <name>` creates an empty environment if none exists. The negative test created `globex` again (deleted), and `deploy-to-tenant acme` created `acme` (kept: a real tenant has its own environment).
+   - A typo in a tenant name creates an environment the same way. In `deploy-to-all.yml` the empty-`TENANT_KEYS` check catches it.
+   - In `deploy-to-tenant` it does not, because `-Optional` skips missing tenant keys. A tenant that should have its own keys but whose secret is missing would deploy with shared keys only.
+   - Suggested: in `deploy-to-tenant`, use `-Optional` only when the tenant is not in `TENANTS_WITH_CUSTOM_KEYS`. Not implemented, to keep decision 4 as specified.
 3. **One tenant's keys failing stops every tenant's deploy.**
    - If any `deploy-tenant-keys` job fails, `deploy-all` doesn't run for anyone (`needs`).
    - That's safe (no tenant is touched), but one bad tenant secret blocks the whole deploy.
-4. **`deploy-one` uses a free-text input.** `type: environment` would only list environments that already exist (`acme` didn't), so the input is `type: string`. A tenant missing from `tenants.json` fails in `get-tenant-server.ps1`.
+4. **`deploy-to-tenant` uses a free-text input.** `type: environment` would only list environments that already exist (`acme` didn't), so the input is `type: string`. A tenant missing from `tenants.json` fails in `get-tenant-server.ps1`.
 5. **GitHub API status glitch, seen twice.** A job stays `in_progress` in the jobs API after it finished and the jobs that depend on it completed: `deploy-all` in run 39795147250, and `globex-no-tenant-keys` in run 39801810800. It had no effect on results.
 6. **Carried over from round 1.**
    - The leak commit is still reachable via `refs/pull/1/head` after the PR was closed and its branch deleted.
@@ -120,7 +130,7 @@ APP_DIR\                   robocopy /MIR target; contains no keys
   - Requirement: `GH_RUNNER` must name one machine, so step 1 writes to the same disk that step 2 reads.
   - If step 2 fails after step 1, a stale `tenant\` folder stays until the next run, which replaces it.
 - **Names in the tenant list.** `TENANTS_WITH_CUSTOM_KEYS` must hold the exact environment names (`prod:carecorp1`). The environment names come from the real `list_environments` job.
-- **`production-deployment.yml` (single site)** already has `environment:`, so it matches `deploy-one`: same scripts, plus `-Optional`, or the stricter check in note 2.
+- **`production-deployment.yml` (single site)** already has `environment:`, so it matches `deploy-to-tenant`: same scripts, plus `-Optional`, or the stricter check in note 2.
 - **`qa-deployment.yml`** has no `environment:` on its deploy job, so QA tenants get shared keys only unless that job gains one.
 - **Every secret is base64:** there's no exception for "text" keys. Secrets must be named explicitly in `env:`; no `toJSON(secrets)`.
 
@@ -148,7 +158,7 @@ Run `gh` from Git Bash or cmd, not by piping from Windows PowerShell, which re-e
 ## Remaining state (names only)
 
 - Environments:
-  - `acme` (no secrets; created by `deploy-one acme`)
+  - `acme` (no secrets; created by `deploy-to-tenant acme`)
   - `carecorp` (`TENANT_KEYS`)
   - `initech` (`TENANT_KEYS`)
 - Repository secrets: `KEY_APNS_P8`, `KEY_LEGACY_P12`, `KEY_PGP_PRIVATE`, `KEY_PGP_PUBLIC`, `KEY_SFTP_PRIVATE`.
