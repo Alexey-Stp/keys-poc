@@ -1,0 +1,139 @@
+name: deploy
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # One job for every server and tenant, like production-deployment-all: no environment,
+  # so only repository secrets (the shared keys) are available here.
+  deploy-all:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: powershell   # Windows PowerShell 5.1, same as the SSC deploy runners
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # How close does passing every secret at once get to the 32,767-char Windows limit?
+      - name: measure toJSON(secrets)
+        env:
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+        run: |
+          $n = $env:ALL_SECRETS.Length
+          Write-Host "toJSON(secrets): $n chars; Windows limit 32767; headroom $(32767 - $n)"
+          [IO.File]::AppendAllText($env:GITHUB_STEP_SUMMARY, "toJSON(secrets) in deploy-all: **$n** chars (limit 32767, headroom $(32767 - $n))`n`n")
+
+      - name: build once per server, copy to tenants, write shared keys
+        env:
+          KEY_SFTP_PRIVATE: ${{ secrets.KEY_SFTP_PRIVATE }}
+          KEY_PGP_PRIVATE:  ${{ secrets.KEY_PGP_PRIVATE }}
+          KEY_PGP_PUBLIC:   ${{ secrets.KEY_PGP_PUBLIC }}
+          KEY_APNS_P8:      ${{ secrets.KEY_APNS_P8 }}
+          KEY_LEGACY_P12:   ${{ secrets.KEY_LEGACY_P12 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $servers = Get-Content -Raw tenants.json | ConvertFrom-Json
+          foreach ($server in $servers.PSObject.Properties) {
+            $serverDir = Join-Path $env:RUNNER_TEMP "servers\$($server.Name)"
+            $build = Join-Path $serverDir 'build'
+            New-Item -ItemType Directory -Path $build -Force | Out-Null
+            [IO.File]::WriteAllText((Join-Path $build 'app.txt'), "built for $($server.Name) at $((Get-Date).ToUniversalTime().ToString('o'))")
+            foreach ($tenant in @($server.Value)) {
+              $app = Join-Path $serverDir "$tenant\app"
+              New-Item -ItemType Directory -Path $app -Force | Out-Null
+              Copy-Item -Path (Join-Path $build '*') -Destination $app -Recurse -Force
+              & .\scripts\write-shared-keys.ps1 -ConfigDir (Join-Path $serverDir 'config') -Tenant $tenant
+            }
+          }
+
+      - name: pack servers
+        run: Compress-Archive -Path "$env:RUNNER_TEMP\servers" -DestinationPath "$env:RUNNER_TEMP\servers.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: servers-after-deploy-all
+          path: ${{ runner.temp }}\servers.zip
+          retention-days: 1
+
+  # Only tenants with their own keys; each job gets its environment's TENANT_KEYS.
+  deploy-tenant-keys:
+    needs: deploy-all
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tenant: ${{ fromJSON(vars.TENANTS_WITH_CUSTOM_KEYS) }}
+    environment: ${{ matrix.tenant }}
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: servers-after-deploy-all
+          path: ${{ runner.temp }}
+
+      - name: write tenant keys
+        env:
+          TENANT: ${{ matrix.tenant }}
+          TENANT_KEYS: ${{ secrets.TENANT_KEYS }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Expand-Archive -Path "$env:RUNNER_TEMP\servers.zip" -DestinationPath $env:RUNNER_TEMP
+          $servers = Get-Content -Raw tenants.json | ConvertFrom-Json
+          $server = @($servers.PSObject.Properties | Where-Object { @($_.Value) -contains $env:TENANT } | ForEach-Object Name)
+          if ($server.Count -ne 1) { throw "Tenant '$env:TENANT' is listed on $($server.Count) servers in tenants.json" }
+          $configDir = "$env:RUNNER_TEMP\servers\$($server[0])\config"
+          .\scripts\write-tenant-keys.ps1 -ConfigDir $configDir -Tenant $env:TENANT
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+          # Upload only this tenant's folder: a full snapshot would carry the other tenants'
+          # pre-custom-key state and overwrite their keys when verify layers the artifacts.
+          $stage = "$env:RUNNER_TEMP\stage\servers\$($server[0])\config"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item -Path (Join-Path $configDir $env:TENANT) -Destination $stage -Recurse
+          Compress-Archive -Path "$env:RUNNER_TEMP\stage\servers" -DestinationPath "$env:RUNNER_TEMP\servers-$env:TENANT.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: servers-after-${{ matrix.tenant }}
+          path: ${{ runner.temp }}\servers-${{ matrix.tenant }}.zip
+          retention-days: 1
+
+  verify:
+    needs: deploy-tenant-keys
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: servers-after-*
+          path: ${{ runner.temp }}\artifacts
+
+      - name: assemble final state and verify
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $a = "$env:RUNNER_TEMP\artifacts"
+          Expand-Archive -Path "$a\servers-after-deploy-all\servers.zip" -DestinationPath $env:RUNNER_TEMP
+          Get-ChildItem -Path $a -Directory | Where-Object Name -ne 'servers-after-deploy-all' | ForEach-Object {
+            Write-Host "Layering $($_.Name)"
+            Get-ChildItem -Path $_.FullName -Filter *.zip | ForEach-Object { Expand-Archive -Path $_.FullName -DestinationPath $env:RUNNER_TEMP -Force }
+          }
+          $configDirs = @(Get-ChildItem -Path "$env:RUNNER_TEMP\servers\*\config" -Directory | ForEach-Object FullName)
+          .\scripts\verify-keys.ps1 -ConfigDir $configDirs -Expected hashes.json -SummaryPath $env:GITHUB_STEP_SUMMARY

@@ -1,0 +1,94 @@
+name: negative
+# Every check job MUST fail. The summary job passes only if all of them failed.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # No environment: TENANT_KEYS is an environment secret, so it must arrive empty.
+  no-environment:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: read TENANT_KEYS without environment
+        env:
+          TENANT_KEYS: ${{ secrets.TENANT_KEYS }}
+        run: |
+          Write-Host "TENANT_KEYS length without environment: $(if ($env:TENANT_KEYS) { $env:TENANT_KEYS.Length } else { 0 })"
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\config\carecorp\Keys" -Force | Out-Null
+          .\scripts\write-tenant-keys.ps1 -ConfigDir "$env:RUNNER_TEMP\config" -Tenant carecorp
+
+  # globex has no environment of its own (note: naming it here makes GitHub create an empty one).
+  globex-no-tenant-keys:
+    runs-on: windows-latest
+    environment: globex
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: write tenant keys for globex
+        env:
+          TENANT_KEYS: ${{ secrets.TENANT_KEYS }}
+        run: |
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\config\globex\Keys" -Force | Out-Null
+          .\scripts\write-tenant-keys.ps1 -ConfigDir "$env:RUNNER_TEMP\config" -Tenant globex
+
+  # Set-Content adds a BOM and CRLF; verify-keys.ps1 must catch it.
+  broken-writer:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: write shared keys with Set-Content, then verify
+        env:
+          KEY_SFTP_PRIVATE: ${{ secrets.KEY_SFTP_PRIVATE }}
+          KEY_PGP_PRIVATE:  ${{ secrets.KEY_PGP_PRIVATE }}
+          KEY_PGP_PUBLIC:   ${{ secrets.KEY_PGP_PUBLIC }}
+          KEY_APNS_P8:      ${{ secrets.KEY_APNS_P8 }}
+          KEY_LEGACY_P12:   ${{ secrets.KEY_LEGACY_P12 }}
+        run: |
+          .\scripts\write-shared-keys.ps1 -ConfigDir "$env:RUNNER_TEMP\config" -Tenant acme -Broken
+          .\scripts\verify-keys.ps1 -ConfigDir "$env:RUNNER_TEMP\config" -Expected hashes.json -Tenant acme -SummaryPath $env:GITHUB_STEP_SUMMARY
+
+  summary:
+    needs: [no-environment, globex-no-tenant-keys, broken-writer]
+    if: always()
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - name: expected failures
+        env:
+          R1: ${{ needs.no-environment.result }}
+          R2: ${{ needs.globex-no-tenant-keys.result }}
+          R3: ${{ needs.broken-writer.result }}
+        run: |
+          $checks = [ordered]@{
+            'no-environment (TENANT_KEYS is empty)' = $env:R1
+            'globex-no-tenant-keys (write-tenant-keys fails)' = $env:R2
+            'broken-writer (verify catches BOM/CRLF)' = $env:R3
+          }
+          $md = "### Negative checks`n`n| Check | Job result | Verdict |`n|---|---|---|`n"
+          $bad = 0
+          foreach ($c in $checks.Keys) {
+            $verdict = if ($checks[$c] -eq 'failure') { 'failed as expected' } else { $bad++; "NOT failed ($($checks[$c]))" }
+            $md += "| $c | $($checks[$c]) | $verdict |`n"
+            Write-Host "$c -> $($checks[$c]) -> $verdict"
+          }
+          [IO.File]::AppendAllText($env:GITHUB_STEP_SUMMARY, $md)
+          if ($bad) { Write-Host "::error::$bad check(s) did not fail"; exit 1 }

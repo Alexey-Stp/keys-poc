@@ -1,0 +1,20 @@
+name: gitleaks
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read   # gitleaks-action lists the PR's commits
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: false   # read-only token; findings are in the log and job summary

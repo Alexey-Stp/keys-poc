@@ -1,3 +1,14 @@
+_testkeys/
+*.p8
+*.p12
+*.pgp
+*.asc
+*.pem
+*.openSSH
+*.ppk
+id_rsa*
+
+# earlier PoC
 setup-local.ps1
 poc-keys/
 output-keys/
