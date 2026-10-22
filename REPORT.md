@@ -11,22 +11,23 @@ Repo `Alexey-Stp/keys-poc`, 2026-10-22. Final commit `fa58c94`. All keys are thr
 - Single-tenant deploys work for a tenant with its own keys and for one without.
 - All three negative checks fail for the right reason.
 
-## Why deploy-to-all needs separate tenant-key jobs
+## Why deploy-to-all has a separate tenant-keys job
 
-- **Environment secrets reach only jobs that name that environment.** GitHub docs, [Deployments and environments: Environment secrets](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments#environment-secrets): "Secrets stored in an environment are only available to workflow jobs that reference the environment."
-- **A job names one environment.** [`jobs.<job_id>.environment`](https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#jobsjob_idenvironment): "Use `jobs.<job_id>.environment` to define the environment that the job references." The value is a single name, or an object with one `name`.
-- **Confirmed here.** The `no-environment` negative check read `TENANT_KEYS` with length 0.
+- **`deploy-to-tenant`** runs one job with `environment: <tenant>`, so it reads `TENANT_KEYS` from that environment directly, together with the repository secrets (the shared `KEY_*`).
+- **`deploy-to-all`** has no `environment:` on its main job (`deploy-all`), so it can't read any environment secret, only repository secrets (plus organization secrets, if the repo had any). That's why the workflow also has the `tenant-keys` matrix job. Each matrix entry declares `environment: ${{ matrix.tenant }}`, and naming the environment on a job is the only way GitHub hands that environment's secret to a job.
 
-So the two workflows work differently:
-- **`deploy-to-tenant`** is one job with `environment: <tenant>`. It sees the repository secrets (shared keys) and that tenant's `TENANT_KEYS`.
-- **`deploy-to-all`** runs one job for all tenants. It has no environment, so it sees only repository secrets. It therefore needs one extra job per tenant with its own keys (`deploy-tenant-keys`, a matrix over `TENANTS_WITH_CUSTOM_KEYS`, each with `environment: <tenant>`), run before it.
+References:
+- The rule: [Deployments and environments: Environment secrets](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments#environment-secrets): "Secrets stored in an environment are only available to workflow jobs that reference the environment."
+- How to create them: [Using secrets in GitHub Actions: Creating secrets for an environment](https://docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions#creating-secrets-for-an-environment). That page covers setup only and doesn't state the access rule.
+- The syntax: [`jobs.<job_id>.environment`](https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#jobsjob_idenvironment): "Use `jobs.<job_id>.environment` to define the environment that the job references." It takes one environment name (or one `name` plus `url`), so one job reaches one environment's secrets. That's why `tenant-keys` is a matrix.
+- Confirmed in this repo: the `no-environment` negative check read `TENANT_KEYS` with length 0.
 
 ## Final results (commit `fa58c94`)
 
 | # | Check | Expected | Result | Run |
 |---|---|---|---|---|
 | 1 | Size check before every `gh secret set` (now on the base64 value) | all under 32,000 bytes | pass (largest 10,488) | local, `scripts/set-secrets.sh` |
-| 2 | `deploy-to-all.yml` `deploy-tenant-keys` (carecorp, initech), runs first | tenant keys decoded into `config\<tenant>\Keys\tenant\` | pass | [39801633846](https://github.com/Alexey-Stp/keys-poc/actions/runs/39801633846) |
+| 2 | `deploy-to-all.yml` `tenant-keys` (carecorp, initech), runs first | tenant keys decoded into `config\<tenant>\Keys\tenant\` | pass | [39801633846](https://github.com/Alexey-Stp/keys-poc/actions/runs/39801633846) |
 | 3 | `deploy-to-all.yml` `deploy-all`: per tenant mirror, shared keys, merge, robocopy check, start pool | all 4 tenants deployed | pass. Tenant SFTP keys logged `tenant (replaces shared)` | same run |
 | 4 | robocopy: second `/MIR` of the app folder after the merge | key hashes unchanged | pass for acme (5 files), carecorp (7), globex (5), initech (6) | same run |
 | 5 | `verify-keys.ps1` on the live folders inside `deploy-all` | 23/23, layout OK, pool after keys | **23/23 byte-exact, 0 problems.** Pool is 50-390 ms after the newest key for every tenant | same run |
@@ -50,7 +51,7 @@ The broken writer also confirms decision 1. Its text files are now exactly 5 byt
    - This fixed the trailing-newline loss: 14 mismatches in round 1, 0 now.
 2. **`toJSON(secrets)` removed** (decision 2). It caused `action_required` with no jobs started ([39794705946](https://github.com/Alexey-Stp/keys-poc/actions/runs/39794705946), [39794909046](https://github.com/Alexey-Stp/keys-poc/actions/runs/39794909046)) and was removed without further investigation.
 3. **Job order reversed, keys moved out of the app folder** (decision 3).
-   - The order is `deploy-tenant-keys` → `deploy-all` → `verify`.
+   - The order is `tenant-keys` → `deploy-all` → `verify`.
    - Keys live in `config\<tenant>\Keys\` (CONFIG_DIR): `shared\` and `tenant\` are merged, and both subfolders are then removed.
    - The app folder holds no keys.
    - The pool starts only after the merge.
@@ -97,7 +98,7 @@ Base64 adds about 33%. The largest single value is 10,488 bytes, well under 32,0
    - In `deploy-to-tenant` it does not, because `-Optional` skips missing tenant keys. A tenant that should have its own keys but whose secret is missing would deploy with shared keys only.
    - Suggested: in `deploy-to-tenant`, use `-Optional` only when the tenant is not in `TENANTS_WITH_CUSTOM_KEYS`. Not implemented, to keep decision 4 as specified.
 3. **One tenant's keys failing stops every tenant's deploy.**
-   - If any `deploy-tenant-keys` job fails, `deploy-all` doesn't run for anyone (`needs`).
+   - If any `tenant-keys` job fails, `deploy-all` doesn't run for anyone (`needs`).
    - That's safe (no tenant is touched), but one bad tenant secret blocks the whole deploy.
 4. **`deploy-to-tenant` uses a free-text input.** `type: environment` would only list environments that already exist (`acme` didn't), so the input is `type: string`. A tenant missing from `tenants.json` fails in `get-tenant-server.ps1`.
 5. **GitHub API status glitch, seen twice.** A job stays `in_progress` in the jobs API after it finished and the jobs that depend on it completed: `deploy-all` in run 39795147250, and `globex-no-tenant-keys` in run 39801810800. It had no effect on results.

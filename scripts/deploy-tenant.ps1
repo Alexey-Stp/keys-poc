@@ -6,7 +6,7 @@
         config\<tenant>\Keys\   final keys (CONFIG_DIR in production, outside the app folder)
         <tenant>\app\           mirrored build, never holds keys
     Tenant keys are either already in config\<tenant>\Keys\tenant\ (deploy-to-tenant: write-tenant-keys.ps1)
-    or copied there from -TenantKeysFrom (deploy-all: the deploy-tenant-keys artifact).
+    or copied there from -TenantKeysFrom (deploy-all: the tenant-keys artifact).
     Reads the KEY_* variables via write-shared-keys.ps1.
 #>
 [CmdletBinding()]

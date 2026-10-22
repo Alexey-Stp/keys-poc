@@ -10,7 +10,7 @@ permissions:
 jobs:
   # 1. Tenant keys first: each job sees only its own environment's TENANT_KEYS.
   #    A missing secret fails here, before any tenant is touched.
-  deploy-tenant-keys:
+  tenant-keys:
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -49,7 +49,7 @@ jobs:
   #    so only repository secrets). Per tenant: mirror app, shared keys, tenant keys, merge,
   #    robocopy check, then start the app pool (scripts/deploy-tenant.ps1).
   deploy-all:
-    needs: deploy-tenant-keys
+    needs: tenant-keys
     runs-on: windows-latest
     defaults:
       run:
