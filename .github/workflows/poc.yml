@@ -12,6 +12,8 @@ on:
 jobs:
   deploy-keys:
     runs-on: windows-latest
+    # Tenant-only secrets live in the environment of the same name; global ones stay repo secrets
+    environment: ${{ inputs.tenant_name }}
     defaults:
       run:
         shell: powershell   # Windows PowerShell 5.1, same as the SSC deploy runners
