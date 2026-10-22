@@ -31,12 +31,17 @@ jobs:
           TENANT_KEYS: ${{ secrets.TENANT_KEYS }}
         run: |
           $server = .\scripts\get-tenant-server.ps1 -Tenant $env:TENANT
-          .\scripts\write-tenant-keys.ps1 -ConfigDir "$env:RUNNER_TEMP\servers\$server\config" -Tenant $env:TENANT
+          $configDir = "$env:RUNNER_TEMP\servers\$server\config"
+          .\scripts\write-tenant-keys.ps1 -ConfigDir $configDir -Tenant $env:TENANT
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # Flat folder for the artifact: a wildcard path would keep SB21\config\... inside it
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\tenant-keys-out" -Force | Out-Null
+          Copy-Item -Path "$configDir\$env:TENANT\Keys\tenant\*" -Destination "$env:RUNNER_TEMP\tenant-keys-out"
 
       - uses: actions/upload-artifact@v4
         with:
           name: tenant-keys-${{ matrix.tenant }}
-          path: ${{ runner.temp }}/servers/*/config/${{ matrix.tenant }}/Keys/tenant/
+          path: ${{ runner.temp }}/tenant-keys-out/
           if-no-files-found: error
           retention-days: 1
 

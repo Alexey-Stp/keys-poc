@@ -18,6 +18,11 @@ $keysDir = Join-Path (Join-Path $ConfigDir $Tenant) 'Keys'
 $sharedDir = Join-Path $keysDir 'shared'
 $tenantDir = Join-Path $keysDir 'tenant'
 
+foreach ($d in @($sharedDir, $tenantDir)) {
+    if ((Test-Path -LiteralPath $d) -and @(Get-ChildItem -LiteralPath $d -Directory).Count -gt 0) {
+        throw "$d contains subfolders - key files must be directly in it"
+    }
+}
 $shared = @(if (Test-Path -LiteralPath $sharedDir) { Get-ChildItem -LiteralPath $sharedDir -File })
 if ($shared.Count -eq 0) { throw "No shared keys in $sharedDir - write-shared-keys.ps1 must run first" }
 $tenantFiles = @(if (Test-Path -LiteralPath $tenantDir) { Get-ChildItem -LiteralPath $tenantDir -File })

@@ -39,9 +39,11 @@ Invoke-Mirror $BuildDir $appDir
 
 & (Join-Path $PSScriptRoot 'write-shared-keys.ps1') -ConfigDir $configDir -Tenant $Tenant
 if ($TenantKeysFrom) {
+    $files = @(Get-ChildItem -LiteralPath $TenantKeysFrom -File)
+    if ($files.Count -eq 0) { throw "No key files directly in $TenantKeysFrom" }
     $tenantDir = Join-Path $keysDir 'tenant'
     New-Item -ItemType Directory -Path $tenantDir -Force | Out-Null
-    Copy-Item -Path (Join-Path $TenantKeysFrom '*') -Destination $tenantDir -Force
+    $files | Copy-Item -Destination $tenantDir -Force
 }
 & (Join-Path $PSScriptRoot 'merge-keys.ps1') -ConfigDir $configDir -Tenant $Tenant
 
