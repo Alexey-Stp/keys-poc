@@ -5,9 +5,9 @@ on:
       tenant_name:
         description: Tenant to write keys for
         required: true
-        default: default
+        default: fls2
         type: choice
-        options: [default, carecorp1]
+        options: [fls2, carecorp1]
 
 jobs:
   deploy-keys:
@@ -17,6 +17,9 @@ jobs:
     defaults:
       run:
         shell: powershell   # Windows PowerShell 5.1, same as the SSC deploy runners
+    env:
+      # Same layout as the deploy servers: D:\<site>\SSC\XML\Keys
+      KEYS_DIR: ${{ inputs.tenant_name == 'carecorp1' && 'D:\Carecorp\SSC\XML\Keys' || 'D:\FLS2\SSC\XML\Keys' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -26,15 +29,18 @@ jobs:
       - name: deploy keys
         env:
           TENANT_NAME: ${{ inputs.tenant_name }}
-          KEYFILE_GLOBAL__PGPPrivateKey.pgp:       ${{ secrets.POC_PGP_PRIVATE_KEY }}
-          KEYFILE_GLOBAL__PGPPassPhrase.txt:       ${{ secrets.POC_PGP_PASSPHRASE }}
-          KEYFILE_CARECORP1__carecorp_partner.asc: ${{ secrets.POC_CARECORP1_PARTNER_KEY }}
+          KEYFILE_GLOBAL__SSC_SFTPPrivateKey.openSSH: ${{ secrets.POC_SSC_SFTP_PRIVATE_KEY }}
+          KEYFILE_GLOBAL__PGPPrivateKey.pgp:          ${{ secrets.POC_PGP_PRIVATE_KEY }}
+          KEYFILE_GLOBAL__PGPPublicKey.pgp:           ${{ secrets.POC_PGP_PUBLIC_KEY }}
+          KEYFILE_GLOBAL__PGPPassPhrase.txt:          ${{ secrets.POC_PGP_PASSPHRASE }}
+          KEYFILE_CARECORP1__CarecorpPublicPGH.pgp:   ${{ secrets.POC_CARECORP_PUBLIC_PGP }}   # carecorp1 environment
         # input passed via env, not ${{ }} inside the script, so it can't inject PowerShell
-        run: .\deploy-keys.ps1 -TenantName $env:TENANT_NAME
+        run: .\deploy-keys.ps1 -TenantName $env:TENANT_NAME -OutputDir $env:KEYS_DIR
 
       - name: list output keys and hashes
         run: |
-          Get-ChildItem .\output-keys -File | Sort-Object Name | ForEach-Object {
+          Write-Host $env:KEYS_DIR
+          Get-ChildItem -LiteralPath $env:KEYS_DIR -File | Sort-Object Name | ForEach-Object {
             [pscustomobject]@{
               File   = $_.Name
               Bytes  = $_.Length
